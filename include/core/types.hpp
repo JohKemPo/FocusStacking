@@ -7,9 +7,6 @@
 
 namespace fs_core {
 
-// Abstração de imagem para processamento em GPU/CPU via API transparente do OpenCV.
-// UMat permite que operações como Warp, GaussianBlur e addWeighted rodem 
-// nativamente via OpenCL (ou CUDA, dependendo da compilação) reduzindo o tráfego PCIe.
 using ImageType = cv::UMat;
 
 struct Config {
@@ -21,6 +18,9 @@ struct Config {
     std::string output_format = ".tiff";     // ".tiff", ".png", ".jpg"
     int max_features = 1000;                 // Opcional para métodos de features
     bool crop_align = true;
+    
+    std::string reference_strategy = "middle"; // "first", "middle", "last"
+    int images_per_stack = 15;                 // Quantidade de fotos por empilhamento
 };
 
 class PipelineException : public std::runtime_error {
@@ -28,4 +28,4 @@ public:
     explicit PipelineException(const std::string& message) : std::runtime_error(message) {}
 };
 
-} 
+}

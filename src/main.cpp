@@ -20,7 +20,9 @@ Config parseConfigYAML(const std::string& yaml_path) {
         if (node["output_format"]) config.output_format = node["output_format"].as<std::string>();
         if (node["max_features"]) config.max_features = node["max_features"].as<int>();
         if (node["crop_align"]) config.crop_align = node["crop_align"].as<bool>();
-        
+
+        if (node["reference_strategy"]) config.reference_strategy = node["reference_strategy"].as<std::string>();
+        if (node["images_per_stack"]) config.images_per_stack = node["images_per_stack"].as<int>();
     } catch (const std::exception& e) {
         spdlog::warn("Erro ao interpretar arquivo YAML: {}. Os parametros padrao hardcoded serao aplicados.", e.what());
     }

@@ -76,16 +76,36 @@ ImageType FeatureAlign::align(const ImageType &target, const ImageType &referenc
     }
 
     // 5. Calculo da Matriz de Homografia usando RANSAC para rejeicao de outliers
-    // Usamos um threshold de reprojecao de 3.0 pixels para acomodar pequenas distorcoes geometricas
     cv::Mat H = cv::findHomography(pts_target, pts_ref, cv::RANSAC, 3.0);
     if (H.empty()) {
         return target;
     }
 
-    // 6. Transformacao de perspectiva (Warping)
+    // 6. Calculo do Inner Bounding Box seguro para o recorte (Crop)
+    std::vector<cv::Point2f> corners = {
+        cv::Point2f(0, 0),
+        cv::Point2f(static_cast<float>(target.cols), 0),
+        cv::Point2f(static_cast<float>(target.cols), static_cast<float>(target.rows)),
+        cv::Point2f(0, static_cast<float>(target.rows))
+    };
+    
+    std::vector<cv::Point2f> transformed_corners;
+    cv::perspectiveTransform(corners, transformed_corners, H);
+
+    int start_x = std::max({0, static_cast<int>(transformed_corners[0].x), static_cast<int>(transformed_corners[3].x)});
+    int start_y = std::max({0, static_cast<int>(transformed_corners[0].y), static_cast<int>(transformed_corners[1].y)});
+    int end_x = std::min({reference.cols, static_cast<int>(transformed_corners[1].x), static_cast<int>(transformed_corners[2].x)});
+    int end_y = std::min({reference.rows, static_cast<int>(transformed_corners[2].y), static_cast<int>(transformed_corners[3].y)});
+
+    cv::Rect safe_rect(start_x, start_y, std::max(0, end_x - start_x), std::max(0, end_y - start_y));
+    
+    // Atualiza a guilhotina global com a intersecao historica mais restritiva
+    global_roi &= safe_rect;
+
+    // 7. Transformacao de perspectiva (Warping) com gradiente zero nas bordas extrapoladas
     ImageType aligned_image;
     cv::warpPerspective(target, aligned_image, H, reference.size(), 
-                        cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+                        cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 
     return aligned_image;
 }

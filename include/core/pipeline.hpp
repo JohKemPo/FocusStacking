@@ -43,6 +43,8 @@ private:
     
     // Função auxiliar para inicializar a aceleração por hardware
     void configureHardware();
+
+    void processSingleStack(const std::vector<std::string>& image_paths, const std::string& output_path);
 };
 
 } 
