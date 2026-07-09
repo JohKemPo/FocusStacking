@@ -1,6 +1,9 @@
-.git
 build/
-vcpkg_installed/
 results/
-*.log
+.git/
 .vscode/
+vcpkg/
+vcpkg_installed/
+*.tiff
+*.jpg
+*.png
