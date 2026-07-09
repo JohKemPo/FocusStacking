@@ -18,7 +18,7 @@ namespace fs_core
         explicit ECCAlign(int iterations = 500, double eps = 1e-5);
         ~ECCAlign() override = default;
 
-        [[nodiscard]] virtual ImageType align(const ImageType &target, const ImageType &reference, cv::Rect &global_roi);
+        [[nodiscard]] cv::Mat estimateTransform(const ImageType &from, const ImageType &to) override;
 
     private:
         int number_of_iterations_;

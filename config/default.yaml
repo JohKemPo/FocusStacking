@@ -6,5 +6,5 @@ use_gpu: true                  # Envia operações de Warp e Filter2D via UMat p
 output_format: ".tiff"         # Tiff preserva faixa dinâmica sem perdas de compactação JPEG
 max_features: 1000             # Limite estrito de vetores para algoritmos KAZE/SIFT
 crop_align: true
-reference_strategy: "middle" # "first", "middle", "last"
+reference_strategy: "first" # "first", "middle", "last"
 images_per_stack: 15

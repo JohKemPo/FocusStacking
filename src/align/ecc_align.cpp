@@ -1,7 +1,9 @@
 #include "align/ecc_align.hpp"
 #include <stdexcept>
+#include <cmath>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
+#include <spdlog/spdlog.h>
 
 namespace fs_core
 {
@@ -9,81 +11,74 @@ namespace fs_core
     ECCAlign::ECCAlign(int iterations, double eps)
         : number_of_iterations_(iterations), termination_eps_(eps) {}
 
-    ImageType ECCAlign::align(const ImageType &target, const ImageType &reference, cv::Rect &global_roi)
+    cv::Mat ECCAlign::estimateTransform(const ImageType &from, const ImageType &to)
     {
-        cv::UMat gray_target, gray_ref;
+        cv::UMat gray_from, gray_to;
 
-        if (target.channels() == 3)
+        if (from.channels() == 3)
         {
-            cv::cvtColor(target, gray_target, cv::COLOR_BGR2GRAY);
-            cv::cvtColor(reference, gray_ref, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(from, gray_from, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(to, gray_to, cv::COLOR_BGR2GRAY);
         }
         else
         {
-            gray_target = target;
-            gray_ref = reference;
+            gray_from = from;
+            gray_to = to;
         }
 
-        // 1. Definição do Fator de Escala (0.25 reduz a área e memória em 16x)
+        // 1. Downscale para reduzir custo/memoria (0.25 => area/memoria 16x menor).
         const double scale = 0.25;
-        cv::UMat small_target, small_ref;
-
-        // 2. Downscale rápido priorizando preservação de área
-        cv::resize(gray_target, small_target, cv::Size(), scale, scale, cv::INTER_AREA);
-        cv::resize(gray_ref, small_ref, cv::Size(), scale, scale, cv::INTER_AREA);
+        cv::UMat small_from, small_to;
+        cv::resize(gray_from, small_from, cv::Size(), scale, scale, cv::INTER_AREA);
+        cv::resize(gray_to, small_to, cv::Size(), scale, scale, cv::INTER_AREA);
 
         cv::TermCriteria criteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS,
                                   number_of_iterations_, termination_eps_);
 
+        // findTransformECC(template, input, W) resolve  template(x) ~= input(W*x),
+        // ou seja W mapeia coordenadas de `template` -> `input`. Com template=from e
+        // input=to obtemos diretamente W: from -> to (direcao usada no warp do pipeline).
         cv::Mat warp_matrix = cv::Mat::eye(2, 3, CV_32F);
 
+        double cc = 0.0;
         try
         {
-            cv::findTransformECC(small_target, small_ref, warp_matrix,
-                                 cv::MOTION_AFFINE, criteria);
-
-            warp_matrix.at<float>(0, 2) /= scale;
-            warp_matrix.at<float>(1, 2) /= scale;
+            cc = cv::findTransformECC(small_from, small_to, warp_matrix,
+                                      cv::MOTION_AFFINE, criteria);
         }
         catch (const cv::Exception &e)
         {
-            return target; // Se falhar, mantém o ROI global intacto
+            return cv::Mat();
         }
 
-        // Usamos a matriz M para transformar as coordenadas dos limites da imagem atual.
-        float m00 = warp_matrix.at<float>(0, 0), m01 = warp_matrix.at<float>(0, 1), m02 = warp_matrix.at<float>(0, 2);
-        float m10 = warp_matrix.at<float>(1, 0), m11 = warp_matrix.at<float>(1, 1), m12 = warp_matrix.at<float>(1, 2);
-        int w = target.cols, h = target.rows;
-
-        // Função lambda para projetar os cantos no referencial da imagem base
-        auto transformPoint = [&](float x, float y)
+        // Convergencia de baixa correlacao => alinhamento nao confiavel.
+        const double min_correlation = 0.6;
+        if (!std::isfinite(cc) || cc < min_correlation)
         {
-            return cv::Point2f(m00 * x + m01 * y + m02, m10 * x + m11 * y + m12);
-        };
+            spdlog::warn("    [Align] Par rejeitado: correlacao ECC baixa ({:.3f} < {:.2f}).", cc, min_correlation);
+            return cv::Mat();
+        }
 
-        cv::Point2f pt0 = transformPoint(0, 0); // Superior esquerdo
-        cv::Point2f pt1 = transformPoint(w, 0); // Superior direito
-        cv::Point2f pt2 = transformPoint(w, h); // Inferior direito
-        cv::Point2f pt3 = transformPoint(0, h); // Inferior esquerdo
+        // Recompoe a translacao para a resolucao original (a parte linear e invariante a escala).
+        warp_matrix.at<float>(0, 2) /= scale;
+        warp_matrix.at<float>(1, 2) /= scale;
 
-        // Calculamos o "Inner Bounding Box" (os limites mais seguros)
-        int start_x = std::max({0, (int)pt0.x, (int)pt3.x});
-        int start_y = std::max({0, (int)pt0.y, (int)pt1.y});
-        int end_x = std::min({w, (int)pt1.x, (int)pt2.x});
-        int end_y = std::min({h, (int)pt2.y, (int)pt3.y});
+        // Validacao do determinante da parte afim: rejeita inversao e escala extrema.
+        const double det_affine =
+            static_cast<double>(warp_matrix.at<float>(0, 0)) * warp_matrix.at<float>(1, 1) -
+            static_cast<double>(warp_matrix.at<float>(0, 1)) * warp_matrix.at<float>(1, 0);
+        if (!std::isfinite(det_affine) || det_affine < 0.5 || det_affine > 2.0)
+        {
+            spdlog::warn("    [Align] Par rejeitado: afim degenerada (det={:.3f}).", det_affine);
+            return cv::Mat();
+        }
 
-        cv::Rect safe_rect(start_x, start_y, std::max(0, end_x - start_x), std::max(0, end_y - start_y));
-
-        // Acumulamos o menor retângulo comum a todas as imagens processadas até agora
-        global_roi &= safe_rect;
-
-        ImageType aligned_image;
-
-        cv::warpAffine(target, aligned_image, warp_matrix, reference.size(),
-                       cv::INTER_LINEAR + cv::WARP_INVERSE_MAP,
-                       cv::BORDER_REPLICATE);
-
-        return aligned_image;
+        // Converte a afim 2x3 em homogenea 3x3 (from -> to).
+        cv::Mat H = cv::Mat::eye(3, 3, CV_64F);
+        cv::Mat warp64;
+        warp_matrix.convertTo(warp64, CV_64F);
+        warp64.copyTo(H(cv::Rect(0, 0, 3, 2)));
+        return H;
     }
 
 }

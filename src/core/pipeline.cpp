@@ -12,6 +12,34 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+
+    // Projeta os cantos de uma imagem `img_size` pela transformacao homogenea `H` e
+    // intersecta o "inner bounding box" resultante no ROI global (guilhotina de recorte).
+    void updateGlobalRoi(cv::Rect &global_roi, const cv::Mat &H,
+                         const cv::Size &img_size, const cv::Size &ref_size)
+    {
+        std::vector<cv::Point2f> corners = {
+            cv::Point2f(0, 0),
+            cv::Point2f(static_cast<float>(img_size.width), 0),
+            cv::Point2f(static_cast<float>(img_size.width), static_cast<float>(img_size.height)),
+            cv::Point2f(0, static_cast<float>(img_size.height))};
+
+        std::vector<cv::Point2f> tc;
+        cv::perspectiveTransform(corners, tc, H);
+
+        int start_x = std::max({0, static_cast<int>(tc[0].x), static_cast<int>(tc[3].x)});
+        int start_y = std::max({0, static_cast<int>(tc[0].y), static_cast<int>(tc[1].y)});
+        int end_x = std::min({ref_size.width, static_cast<int>(tc[1].x), static_cast<int>(tc[2].x)});
+        int end_y = std::min({ref_size.height, static_cast<int>(tc[2].y), static_cast<int>(tc[3].y)});
+
+        cv::Rect safe_rect(start_x, start_y, std::max(0, end_x - start_x), std::max(0, end_y - start_y));
+        global_roi &= safe_rect;
+    }
+
+} // namespace
+
 namespace fs_core
 {
 
@@ -97,20 +125,55 @@ namespace fs_core
             return;
         }
 
-        cv::Rect global_roi(0, 0, reference.cols, reference.rows);
+        const cv::Size ref_size = reference.size();
+        cv::Rect global_roi(0, 0, ref_size.width, ref_size.height);
+
+        // A referencia entra sem warp (transformacao identidade).
         stacker_->addImage(reference);
+        spdlog::info("  Camada de referencia {}/{} -> [{}]", ref_idx + 1, image_paths.size(), image_paths[ref_idx]);
 
-        for (size_t i = 0; i < image_paths.size(); ++i)
+        // Alinhamento SEQUENCIAL: cada frame e alinhado ao seu vizinho imediato (onde a
+        // diferenca de foco/breathing e minima e ha muitos matches). As transformacoes
+        // vizinho-a-vizinho sao ACUMULADAS ate o referencial global, corrigindo a escala
+        // progressiva que causava o smear radial nos frames de foco extremo.
+        auto process_chain = [&](int start, int stop, int step)
         {
-            spdlog::info("  Processando camada {}/{} -> [{}]", i + 1, image_paths.size(), image_paths[i]);
-            if (i == ref_idx) continue;
+            cv::Mat cumulative = cv::Mat::eye(3, 3, CV_64F); // vizinho -> referencia
+            ImageType neighbor = reference;
 
-            ImageType current = IOManager::loadImage(image_paths[i]);
-            if (current.empty()) continue;
+            for (int i = start; i != stop; i += step)
+            {
+                spdlog::info("  Processando camada {}/{} -> [{}]", i + 1, image_paths.size(), image_paths[i]);
 
-            ImageType aligned = aligner_->align(current, reference, global_roi);
-            stacker_->addImage(aligned);
-        }
+                ImageType current = IOManager::loadImage(image_paths[i]);
+                if (current.empty()) continue;
+
+                // Transformacao do frame atual para o referencial do vizinho (from -> to).
+                cv::Mat T = aligner_->estimateTransform(current, neighbor);
+                if (T.empty())
+                {
+                    // Falha no par: assume ausencia de movimento (identidade) e segue a cadeia.
+                    spdlog::warn("    [Align] Par sem alinhamento confiavel; usando identidade neste passo.");
+                    T = cv::Mat::eye(3, 3, CV_64F);
+                }
+
+                // Compoe: (vizinho -> ref) * (atual -> vizinho) = (atual -> ref).
+                cumulative = cumulative * T;
+
+                ImageType aligned;
+                cv::warpPerspective(current, aligned, cumulative, ref_size,
+                                    cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+
+                updateGlobalRoi(global_roi, cumulative, current.size(), ref_size);
+                stacker_->addImage(aligned);
+
+                neighbor = current; // o frame atual vira referencia local do proximo passo
+            }
+        };
+
+        // Caminha para os dois lados a partir da referencia, encadeando os vizinhos.
+        process_chain(static_cast<int>(ref_idx) - 1, -1, -1);                          // ref-1 .. 0
+        process_chain(static_cast<int>(ref_idx) + 1, static_cast<int>(image_paths.size()), 1); // ref+1 .. fim
 
         ImageType final_result = stacker_->finalize();
 

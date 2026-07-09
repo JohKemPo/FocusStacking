@@ -28,7 +28,7 @@ namespace fs_core
         explicit FeatureAlign(FeatureType type = FeatureType::KAZE, int max_features = 1000);
         ~FeatureAlign() override = default;
 
-        [[nodiscard]] virtual ImageType align(const ImageType &target, const ImageType &reference, cv::Rect &global_roi);
+        [[nodiscard]] cv::Mat estimateTransform(const ImageType &from, const ImageType &to) override;
 
     private:
         FeatureType type_;

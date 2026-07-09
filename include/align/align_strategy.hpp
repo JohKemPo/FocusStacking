@@ -13,12 +13,18 @@ namespace fs_core
         virtual ~AlignStrategy() = default;
 
         /**
-         * @brief Alinha a imagem alvo em relacao a imagem de referencia.
-         * * @param target Imagem a ser alinhada.
-         * @param reference Imagem de referencia (base fixa).
-         * @return ImageType Imagem resultante apos a transformacao geométrica.
+         * @brief Estima a transformacao geometrica que leva `from` ao referencial de `to`.
+         *
+         * Retorna uma matriz 3x3 (CV_64F) em coordenadas homogeneas tal que, para um ponto
+         * p em `from`, H*p fornece a posicao correspondente em `to`. O pipeline usa essa
+         * matriz para encadear transformacoes entre vizinhos (alinhamento sequencial) e
+         * aplicar o warp uma unica vez no referencial global.
+         *
+         * @param from Imagem cujas coordenadas serao mapeadas.
+         * @param to   Imagem de referencia local (vizinho imediato na sequencia).
+         * @return cv::Mat Matriz 3x3 (from -> to), ou matriz vazia se o alinhamento falhar.
          */
-        [[nodiscard]] virtual ImageType align(const ImageType &target, const ImageType &reference, cv::Rect &global_roi) = 0;
+        [[nodiscard]] virtual cv::Mat estimateTransform(const ImageType &from, const ImageType &to) = 0;
     };
 
 }
